@@ -16,6 +16,21 @@ from tools import search_tool, wiki_tool, save_tool
 # 1. Load your GOOGLE_API_KEY from the .env file
 load_dotenv()
 
+
+def get_google_api_key() -> str | None:
+    """Return the configured Gemini API key, or None if it is missing."""
+    api_key = os.getenv("GOOGLE_API_KEY")
+    if api_key:
+        return api_key.strip()
+    return None
+
+
+def is_leaked_key_error(error: Exception) -> bool:
+    message = str(error).lower()
+    return "reported as leaked" in message or (
+        "permission_denied" in message and "api key" in message
+    )
+
 # 2. Define the Research Schema (Matches the video's logic)
 class ResearchResponse(BaseModel):
     topic: str
@@ -29,12 +44,48 @@ parser = PydanticOutputParser(pydantic_object=ResearchResponse)
 # Setup Streamlit Page
 st.set_page_config(page_title="AI Research Agent", page_icon="🔍")
 st.title("🔍 AI Research Agent")
+st.markdown(
+    """
+    <style>
+    div[data-testid="stChatInput"] {
+        padding: 0.75rem 1rem 1rem;
+        background: rgba(255, 255, 255, 0.96);
+        border-top: 1px solid #d9e2ec;
+    }
+
+    div[data-testid="stChatInput"] textarea {
+        min-height: 3.25rem !important;
+        padding: 0.85rem 3rem 0.85rem 1rem !important;
+        border: 2px solid #7c93ad !important;
+        border-radius: 8px !important;
+        background: #ffffff !important;
+        box-shadow: 0 2px 8px rgba(15, 23, 42, 0.08) !important;
+        color: #111827 !important;
+        font-size: 1rem !important;
+    }
+
+    div[data-testid="stChatInput"] textarea:focus {
+        border-color: #2563eb !important;
+        box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.18) !important;
+    }
+
+    div[data-testid="stChatInput"] button {
+        border-radius: 8px !important;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
 # Cache the agent initialization so it doesn't reload on every UI interaction
 @st.cache_resource
-def get_agent():
+def get_agent(api_key: str):
     # 3. Initialize Gemini
-    llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0)
+    llm = ChatGoogleGenerativeAI(
+        model="gemini-2.5-flash",
+        temperature=0,
+        google_api_key=api_key,
+    )
     
     # 4. Define the System Prompt
     system_prompt = (
@@ -49,7 +100,12 @@ def get_agent():
     # 6. Build and Execute the Agent
     return create_agent(model=llm, tools=tools, system_prompt=system_prompt)
 
-agent = get_agent()
+google_api_key = get_google_api_key()
+if not google_api_key:
+    st.error("Missing GOOGLE_API_KEY. Add a valid Gemini API key to your .env file, then restart Streamlit.")
+    st.stop()
+
+agent = get_agent(google_api_key)
 
 # Initialize session states to store conversation histories
 if "chat_history" not in st.session_state:
@@ -99,4 +155,10 @@ if user_query := st.chat_input("What would you like me to research today?"):
                 st.session_state.display_messages.append({"role": "assistant", "content": formatted_response})
                 
             except Exception as e:
-                st.error(f"An error occurred: {e}")
+                if is_leaked_key_error(e):
+                    st.error(
+                        "Your Gemini API key has been blocked because Google detected it was leaked. "
+                        "Create a new key, replace GOOGLE_API_KEY in your .env file, then restart Streamlit."
+                    )
+                else:
+                    st.error(f"An error occurred: {e}")
